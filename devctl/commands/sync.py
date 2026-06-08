@@ -2,6 +2,9 @@
 
 Tracked files are copied into ~/.devctl/dotfiles/ which is a real Git repo.
 push/pull operate on that repo; status diffs local vs the mirrored copy.
+
+``rich`` and ``GitPython`` are imported lazily so importing this module costs
+only ``import typer``; the heavy deps load on first use of a sync command.
 """
 from __future__ import annotations
 
@@ -10,14 +13,17 @@ import shutil
 from pathlib import Path
 
 import typer
-from rich.console import Console
-from rich.table import Table
 
 from .. import config
 from ..storage import DOTFILES_DIR, HOME, ensure_dirs
 
-console = Console()
 app = typer.Typer(help="Dotfile manager backed by a private Git repo.")
+
+
+def _console():
+    from rich.console import Console
+
+    return Console()
 
 
 def _repo():
@@ -40,6 +46,7 @@ def _mirror_path(src: Path) -> Path:
 def init(repo_url: str = typer.Argument(..., help="Git remote URL for dotfiles.")) -> None:
     """Initialise the local mirror and set the remote."""
     ensure_dirs()
+    console = _console()
     Repo = _repo()
     if (DOTFILES_DIR / ".git").exists():
         console.print("[yellow]Dotfiles repo already initialised.[/]")
@@ -57,6 +64,7 @@ def init(repo_url: str = typer.Argument(..., help="Git remote URL for dotfiles."
 @app.command("add")
 def add(paths: list[Path]) -> None:
     """Start tracking one or more dotfiles or directories."""
+    console = _console()
     data = config.load()
     tracked = set(data["sync"]["tracked"])
     for p in paths:
@@ -70,6 +78,7 @@ def add(paths: list[Path]) -> None:
 @app.command("push")
 def push(message: str = typer.Option("devctl sync", "-m")) -> None:
     """Copy tracked files into the mirror, commit, and push."""
+    console = _console()
     Repo = _repo()
     repo = Repo(DOTFILES_DIR)
     _materialise(verbose=True)
@@ -89,6 +98,7 @@ def push(message: str = typer.Option("devctl sync", "-m")) -> None:
 @app.command("pull")
 def pull() -> None:
     """Pull the remote repo and apply changes back to live dotfile locations."""
+    console = _console()
     Repo = _repo()
     repo = Repo(DOTFILES_DIR)
     try:
@@ -117,6 +127,9 @@ def pull() -> None:
 @app.command("status")
 def status() -> None:
     """Diff view: which tracked files are out of sync with the mirror."""
+    from rich.table import Table
+
+    console = _console()
     data = config.load()
     table = Table(title="Dotfile sync status")
     table.add_column("Path")
@@ -140,6 +153,7 @@ def status() -> None:
 
 def _materialise(verbose: bool = False) -> None:
     """Copy each tracked source into the dotfiles mirror."""
+    console = _console() if verbose else None
     data = config.load()
     for src in data["sync"]["tracked"]:
         src_path = Path(src)

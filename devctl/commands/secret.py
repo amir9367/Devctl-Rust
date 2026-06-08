@@ -1,7 +1,11 @@
 """`devctl secret` — per-project encrypted .env vault using PyNaCl.
 
 The vault is a single file per project at ~/.devctl/vault/<project>.enc.
-Key derivation: scrypt(master_password, salt) → 32-byte key for SecretBox.
+Key derivation: argon2id(master_password, salt) → 32-byte key for SecretBox.
+
+``rich`` is imported inside each command so the scripting-friendly ``secret get``
+path (which prints a bare value to stdout) doesn't pay the ~45 ms ``rich.table``
+import.  ``nacl`` stays at module level because every command needs it.
 """
 from __future__ import annotations
 
@@ -13,12 +17,9 @@ from typing import Optional
 
 import typer
 from nacl import pwhash, secret, utils
-from rich.console import Console
-from rich.table import Table
 
 from ..storage import VAULT_DIR, ensure_dirs
 
-console = Console()
 app = typer.Typer(help="Per-project encrypted .env vault.")
 
 # Salt is stored alongside the ciphertext so the same password unlocks across machines.
@@ -56,7 +57,9 @@ def _load(project: str, password: bytes) -> dict[str, str]:
     try:
         plaintext = secret.SecretBox(key).decrypt(ciphertext)
     except Exception:
-        console.print("[red]Failed to decrypt — wrong password?[/]")
+        from rich.console import Console
+
+        Console().print("[red]Failed to decrypt — wrong password?[/]")
         raise typer.Exit(1)
     return json.loads(plaintext.decode())
 
@@ -82,6 +85,9 @@ def set_(
     project: Optional[str] = typer.Option(None, "--project", "-p"),
 ) -> None:
     """Store or update a secret."""
+    from rich.console import Console
+
+    console = Console()
     proj = _project_name(project)
     pw = _password()
     data = _load(proj, pw)
@@ -99,7 +105,9 @@ def get(
     proj = _project_name(project)
     data = _load(proj, _password())
     if key not in data:
-        console.print(f"[red]No such key '{key}' in vault '{proj}'.[/]")
+        from rich.console import Console
+
+        Console().print(f"[red]No such key '{key}' in vault '{proj}'.[/]")
         raise typer.Exit(1)
     print(data[key])
 
@@ -107,6 +115,10 @@ def get(
 @app.command("list")
 def list_(project: Optional[str] = typer.Option(None, "--project", "-p")) -> None:
     """List all keys in the vault (values masked)."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
     proj = _project_name(project)
     data = _load(proj, _password())
     if not data:
@@ -126,6 +138,9 @@ def rm(
     project: Optional[str] = typer.Option(None, "--project", "-p"),
 ) -> None:
     """Delete a secret."""
+    from rich.console import Console
+
+    console = Console()
     proj = _project_name(project)
     pw = _password()
     data = _load(proj, pw)

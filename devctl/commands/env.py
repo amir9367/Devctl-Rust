@@ -1,15 +1,16 @@
-"""`devctl env` — scaffold and register projects in the local index."""
+"""`devctl env` — scaffold and register projects in the local index.
+
+Heavy imports (rich) are deferred into the command bodies so importing this
+module — which cli.py must do to register the sub-app — costs only ``import
+typer``.  Commands that never render a table (``add``, ``rm``) skip the ~45 ms
+``rich.table`` import entirely.
+"""
 from __future__ import annotations
 
 from pathlib import Path
 
 import typer
-from rich.console import Console
-from rich.table import Table
 
-from .. import db
-
-console = Console()
 app = typer.Typer(help="Manage your project registry.")
 
 
@@ -29,6 +30,25 @@ SCAFFOLDS: dict[str, dict[str, str]] = {
     "generic": {"README.md": "# {name}\n", ".gitignore": ".env\n"},
 }
 
+# Files that, if present in a directory, reveal its language — used by `add`
+# to auto-tag projects when the user doesn't pass --lang.
+_LANG_MARKERS: list[tuple[str, str]] = [
+    ("pyproject.toml", "python"),
+    ("setup.py", "python"),
+    ("requirements.txt", "python"),
+    ("package.json", "node"),
+    ("Cargo.toml", "rust"),
+    ("go.mod", "go"),
+]
+
+
+def _detect_lang(path: Path) -> str | None:
+    """Best-effort language detection from well-known marker files."""
+    for marker, lang in _LANG_MARKERS:
+        if (path / marker).exists():
+            return lang
+    return None
+
 
 @app.command("new")
 def new(
@@ -39,6 +59,11 @@ def new(
     ),
 ) -> None:
     """Scaffold a new project folder and auto-register it."""
+    from rich.console import Console
+
+    from .. import db
+
+    console = Console()
     if lang not in SCAFFOLDS:
         console.print(f"[red]Unknown lang '{lang}'.[/] Choose: {', '.join(SCAFFOLDS)}")
         raise typer.Exit(1)
@@ -61,30 +86,47 @@ def new(
 def add(
     path: Path,
     name: str = typer.Option(None, help="Defaults to folder name."),
-    lang: str = typer.Option(None, help="Optional language tag."),
+    lang: str = typer.Option(None, help="Optional language tag (auto-detected if omitted)."),
 ) -> None:
-    """Register an existing folder as a project."""
+    """Register an existing folder as a project (language auto-detected)."""
+    from rich.console import Console
+
+    from .. import db
+
+    console = Console()
     path = path.resolve()
     if not path.is_dir():
         console.print(f"[red]{path} is not a directory.[/]")
         raise typer.Exit(1)
-    db.add_project(name or path.name, path, lang)
-    console.print(f"[green]✓[/] Registered [bold]{name or path.name}[/]")
+    resolved_lang = lang or _detect_lang(path)
+    db.add_project(name or path.name, path, resolved_lang)
+    tag = f" [magenta]({resolved_lang})[/]" if resolved_lang else ""
+    console.print(f"[green]✓[/] Registered [bold]{name or path.name}[/]{tag}")
 
 
 @app.command("rm")
 def rm(name: str) -> None:
     """Remove a project from the registry (does NOT delete files)."""
-    n = db.remove_project(name)
-    if n == 0:
-        console.print(f"[yellow]No project named '{name}'.[/]")
-    else:
+    from rich.console import Console
+
+    from .. import db
+
+    console = Console()
+    if db.remove_project(name):
         console.print(f"[green]✓[/] Removed [bold]{name}[/]")
+    else:
+        console.print(f"[yellow]No project named '{name}'.[/]")
 
 
 @app.command("ls")
 def ls() -> None:
-    """List all registered projects."""
+    """List all registered projects, ranked by frecency."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from .. import db
+
+    console = Console()
     rows = db.list_projects()
     if not rows:
         console.print("[dim]No projects yet.[/]")
@@ -92,7 +134,8 @@ def ls() -> None:
     table = Table(title="Projects", show_lines=False)
     table.add_column("Name", style="cyan")
     table.add_column("Lang", style="magenta")
+    table.add_column("Uses", style="green", justify="right")
     table.add_column("Path", style="white")
     for r in rows:
-        table.add_row(r["name"], r["lang"] or "-", r["path"])
+        table.add_row(r["name"], r["lang"] or "-", str(r["use_count"]), r["path"])
     console.print(table)

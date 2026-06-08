@@ -35,9 +35,9 @@ app = typer.Typer(
 # defining the helper function costs nothing — the import only runs when the
 # helper is called.
 
-_SUBAPP_NAMES: frozenset[str] = frozenset({"jump", "env", "sync", "secret"})
+_SUBAPP_NAMES: frozenset[str] = frozenset({"jump", "env", "sync", "secret", "run"})
 _SNAPSHOT_NAMES: frozenset[str] = frozenset({"snapshot", "restore"})
-_ALL_COMMANDS: frozenset[str] = _SUBAPP_NAMES | _SNAPSHOT_NAMES | {"version"}
+_ALL_COMMANDS: frozenset[str] = _SUBAPP_NAMES | _SNAPSHOT_NAMES | {"doctor", "version"}
 
 
 def _add_jump() -> None:
@@ -60,6 +60,18 @@ def _add_secret() -> None:
     app.add_typer(sub, name="secret")
 
 
+def _add_run() -> None:
+    # run is a top-level verb (like snapshot/restore), not a sub-app, so its
+    # trailing variadic argument parses cleanly.
+    from .commands.run import run
+    app.command("run")(run)
+
+
+def _add_doctor() -> None:
+    from .commands.doctor import doctor
+    app.command("doctor")(doctor)
+
+
 def _add_snapshot() -> None:
     # snapshot / restore are top-level verbs, not a sub-app.
     from .commands.snapshot import snapshot, restore
@@ -72,6 +84,8 @@ _LOADERS: dict[str, object] = {
     "env":      _add_env,
     "sync":     _add_sync,
     "secret":   _add_secret,
+    "run":      _add_run,
+    "doctor":   _add_doctor,
     "snapshot": _add_snapshot,
     "restore":  _add_snapshot,   # same loader; registers both at once
 }
@@ -90,6 +104,8 @@ if _argv1 is None or _argv1 not in _ALL_COMMANDS:
     _add_env()
     _add_sync()
     _add_secret()
+    _add_run()
+    _add_doctor()
     _add_snapshot()
 elif _argv1 in _LOADERS:
     # Fast path: one targeted import.
@@ -97,6 +113,17 @@ elif _argv1 in _LOADERS:
 # "version" falls through — its handler below needs no module import.
 
 # ── Built-in commands ─────────────────────────────────────────────────────────
+
+@app.callback()
+def _root() -> None:
+    """devctl — your personal dev-environment manager.
+
+    This no-op callback exists so Typer always treats the app as a multi-command
+    group.  Without it, the fast `version` path (which registers only the single
+    `version` command) would collapse into a single-command CLI, and Typer would
+    reject the command name itself as an unexpected argument.
+    """
+
 
 @app.command()
 def version() -> None:
