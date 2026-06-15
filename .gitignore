@@ -1,16 +1,5 @@
-__pycache__/
-*.pyc
-*.egg-info/
-build/
-dist/
-.venv/
-.env
+/target
+**/*.rs.bk
 
-# Test / lint / coverage artifacts
-.coverage
-coverage.xml
-.pytest_cache/
-.ruff_cache/
-
-# Local working notes (not part of the project)
-need_more_work.txt
+# Node tooling (ancillary)
+node_modules/

@@ -1,0 +1,7 @@
+# Pin the project to the stable toolchain for the host platform.
+# On this Windows machine that resolves to the MSVC host
+# (x86_64-pc-windows-msvc), which links via the VS Build Tools installed at
+# E:\VS\BuildTools + the Windows SDK. On Linux/macOS CI it resolves to the
+# native stable toolchain, so this file stays portable.
+[toolchain]
+channel = "stable"

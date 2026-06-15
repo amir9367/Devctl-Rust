@@ -1,62 +1,45 @@
-# devctl — your personal dev-environment manager
-
-[![CI](https://github.com/amir9367/devctl/actions/workflows/ci.yml/badge.svg)](https://github.com/amir9367/devctl/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
-[![Coverage](https://img.shields.io/badge/coverage-88%25-brightgreen.svg)](#development)
+# devctl (Rust) — your personal dev-environment manager
 
 A single CLI that is the source of truth for your whole dev setup across machines —
 projects, dotfiles, machine snapshots, per-project secrets, and task running.
 Think of it as a smaller, developer-focused, **personal** Ansible.
 
-## Why
-
-- New-machine setup takes hours of reinstalling, reconfiguring, re-cloning.
-- Dotfiles on the laptop and the desktop drift apart.
-- You forget which projects exist, where they live, and how to run them.
-- Secrets and env vars end up scattered in plaintext everywhere.
-
-`devctl` puts all of that behind one cohesive, cross-platform tool.
-
-## Demo
-
-> _Add an asciinema/GIF here — e.g. `devctl jump` fuzzy-picking a project, then
-> `devctl doctor` printing a green health report._
->
-> `![devctl demo](docs/demo.gif)`
+This is a from-scratch **Rust** rewrite of the original Python `devctl`. It keeps the
+same command surface and behavior, but ships as a single self-contained binary with
+no interpreter and no per-invocation import cost.
 
 ## Features
 
 | Command | What it does |
 |---|---|
-| `devctl jump [query]` | Fuzzy-pick a registered project and `cd` into it — ranked by **frecency** (frequency × recency, like zoxide) |
-| `devctl env new\|add\|ls\|rm` | Scaffold / register / list / remove projects (language auto-detected on `add`) |
+| `devctl jump [query]` | Fuzzy-pick a registered project and print its path — ranked by **frecency** (frequency × recency, like zoxide) |
+| `devctl env new\|add\|rm\|ls` | Scaffold / register / remove / list projects (language auto-detected on `add`) |
 | `devctl run <project> <task>` | Per-project task runner driven by a `devctl.toml` `[tasks]` table |
 | `devctl sync init\|add\|push\|pull\|status` | Track dotfiles in a private Git repo and keep machines in sync |
 | `devctl snapshot` / `restore` | Capture & rebuild a machine: packages, VS Code extensions, aliases, env-var names |
-| `devctl secret set\|get\|list\|rm` | Per-project encrypted `.env` vault (PyNaCl / argon2id) |
-| `devctl doctor` | Diagnose your setup: git, registry, stale paths, dotfiles repo, vault, config |
+| `devctl secret set\|get\|list\|rm` | Per-project encrypted `.env` vault (argon2id + XSalsa20-Poly1305) |
+| `devctl doctor` | Diagnose your setup: git, registry, stale paths, dotfiles repo, config |
 
 ## Install
 
 ```bash
-pip install -e .
-# or, once published:
-pip install devctl
+cargo install --path .
+# or build a release binary directly:
+cargo build --release   # → target/release/devctl
 ```
 
-Requires Python 3.9+. Tested on Linux, macOS, and Windows.
+Requires a stable Rust toolchain. Tested on Linux, macOS, and Windows.
 
 ## Quick start
 
 ```bash
-# Register an existing project (language auto-detected from pyproject.toml etc.)
+# Register an existing project (language auto-detected from Cargo.toml etc.)
 devctl env add ~/code/my-app
 
 # Or scaffold a new one
 devctl env new my-app --lang python
 
-# Jump to any project — frecency-ranked interactive picker
+# Jump to any project — frecency-ranked picker
 devctl jump
 
 # Define and run per-project tasks (devctl.toml [tasks])
@@ -102,76 +85,57 @@ self-contained and easy to back up or wipe:
 ```
 ~/.devctl/
 ├── config.toml           # global config (dotfile repo, tracked paths)
-├── projects.db           # SQLite project index (WAL mode)
+├── projects.json         # project index + frecency data
 ├── profile.toml          # latest machine snapshot
 ├── dotfiles/             # local clone of your dotfiles repo
 └── vault/<project>.enc   # encrypted per-project .env vaults
 ```
+
+> **Note:** the Python version stored the registry in SQLite (`projects.db`). This
+> Rust rewrite uses a plain JSON file (`projects.json`) with the identical frecency
+> logic — keeping the tool pure-Rust with no native dependencies. The two formats
+> are not interchangeable; this is a clean reimplementation, not a drop-in for
+> existing `~/.devctl` data.
 
 ### Frecency ranking
 
 `jump` and `env ls` order projects by a **frecency** score — `use_count` × a
 recency weight that decays in buckets (last hour ×4, last day ×2, last week ×0.5,
 older ×0.25), the same idea behind zoxide, autojump, and Firefox's address bar.
-A monotonic `seq` column breaks ties deterministically even when the system clock
-has coarse resolution (Windows `time.time()` is ~16 ms), so ordering is stable.
+A monotonic `seq` field breaks ties deterministically so ordering is stable.
 
 ### Encrypted secrets
 
-Each project's vault is a single `<project>.enc` file: a random argon2id salt
-followed by an XSalsa20-Poly1305 (`nacl.SecretBox`) ciphertext of the JSON blob.
-The master password comes from `DEVCTL_MASTER_PASSWORD` or an interactive prompt.
-
-### Architecture
-
-```
-devctl/
-├── cli.py             # entry point; two-tier lazy command loading
-├── storage.py         # path resolution under ~/.devctl
-├── config.py          # TOML global config
-├── db.py              # SQLite registry + frecency scoring
-└── commands/
-    ├── jump.py        env.py    run.py
-    ├── sync.py        secret.py snapshot.py  doctor.py
-```
-
-## Performance
-
-Startup latency is the most-felt cost of a CLI, so devctl loads as little as
-possible per invocation:
-
-1. **Two-tier lazy command loading.** `cli.py` inspects `sys.argv` *before*
-   importing anything heavy and loads only the one command module you invoked.
-   `devctl version` never imports `snapshot`, `secret`, or `sync` — so it stays
-   around **~270 ms** (mostly Python + Typer startup) instead of paying for every
-   subcommand's dependencies.
-2. **Deferred heavy imports.** Inside each command, third-party imports (`rich`,
-   `nacl`, `GitPython`) happen in the function body, not at module top. Scripting
-   paths skip what they don't need — e.g. `secret get` (which prints a bare value)
-   avoids the ~45 ms `rich.table` import entirely.
-3. **SQLite tuned for a CLI.** The registry connection is opened once per process
-   and reused, with `journal_mode=WAL` + `synchronous=NORMAL` so reads never block
-   on a concurrent write and commits skip the per-write fsync (safe under WAL).
+Each project's vault is a single `<project>.enc` file: `salt(16) || nonce(24) ||
+ciphertext`. The 32-byte key is derived with **argon2id** from the master password
+and the stored salt; the JSON blob is sealed with **XSalsa20-Poly1305**. The master
+password comes from `DEVCTL_MASTER_PASSWORD` or an interactive prompt.
 
 ## Tech stack
 
-- **Typer** — type-safe CLI
-- **Rich** — terminal output
-- **SQLite** — local project index
-- **PyNaCl** — argon2id + SecretBox secret vault
-- **GitPython** — dotfile sync
-- **tomli / tomli-w** — TOML config
+- **clap** — type-safe CLI parsing
+- **comfy-table** + **owo-colors** — terminal tables and color
+- **inquire** — interactive fuzzy picker
+- **serde / serde_json / toml** — config, registry, and profile serialization
+- **argon2** + **crypto_secretbox** — argon2id KDF + XSalsa20-Poly1305 vault
+- **git** (subprocess) — dotfile sync, inheriting your git/SSH config
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest --cov            # 74 tests, ~88% coverage
-ruff check .            # lint
+cargo test                       # unit + integration tests
+cargo clippy --all-targets       # lint
+cargo fmt --all -- --check       # formatting
 ```
 
-CI (GitHub Actions) runs ruff plus the full suite on a matrix of Linux, macOS,
-and Windows across Python 3.9–3.12.
+CI (GitHub Actions) runs fmt + clippy plus the full suite on Linux, macOS, and Windows.
+
+### Building on Windows
+
+The MSVC target needs the Visual Studio C++ build tools + Windows SDK (for the
+linker). On a machine with limited free space, building with reduced parallelism
+(`cargo build -j 2`) avoids `STATUS_COMMITMENT_LIMIT` (out-of-virtual-memory) errors
+when the page file can't grow.
 
 ## License
 
